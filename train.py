@@ -13,6 +13,7 @@ BATCHSIZE = 4
 LEARNINGRATE = 1e-4
 EPOCHS = 10000
 N_EMBD = 32
+NB_CHANNELS = 4
 ####################################################
 
 
@@ -92,14 +93,48 @@ xb, yb = get_batch("train")
 ###########################################
 #                Model                    #
 ###########################################
+# Self attention mecanism into the head:
 
+class Head(nn.Module):
+    def __init__(self, head_size):
+
+        super().__init__()
+        self.key = key = nn.Linear(N_EMBD, head_size, bias = False)
+        self.query = nn.Linear(N_EMBD, head_size, bias = False)
+        self.value = nn.Linear(N_EMBD, head_size, bias = False)
+        self.register_buffer('tril', torch.trill(torch.ones[CONTEXT_LENGTH, CONTEXT_LENGTH]))
+
+    def forward(self, x):
+      # This is self attention:
+      B, T, C = x.shape
+      k = self.key(x)
+      q = self.query(x)
+      v = self.value(x)
+
+      weights = q @ k.transpose(-2,1) * (C**-0.5) # For nomalisation
+      weights = weights.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+      weights = F.softmax(weights)
+
+      out = weights @ v
+      return out
+
+# To have a better LLM, use multiples heads:
+class MultiHead(nn.Module):
+  def __init__(self, nb_head, head_size):
+    super().__init__()  
+    # Just create multiples heads:
+    self.heads = nn.ModuleList(Head(head_size) for _ in range(nb_head))
+
+    def forward(self, x):
+      return torch.cat([h(x) for h in self.heads], dim= 1)
 
 class BigramLanguageModel(nn.Module):
-
   def __init__(self):
     super().__init__()
     self.token_embedding_table = nn.Embedding(vocab_size, N_EMBD)
     self.pos_embedding_table = nn.Embedding(CONTEXT_LENGTH, N_EMBD)
+    
+    self.self_att_head = MultiHead(NB_CHANNELS, N_EMBD)
     self.lm_head = nn.linear(N_EMBD, vocab_size)
 
   def forward(self, idx, targets=None):
@@ -107,6 +142,7 @@ class BigramLanguageModel(nn.Module):
     token_emb = self.token_embedding_table(idx) # shape is B, T, C, where C is the embedding
     pos_embd = self.pos_embedding_table(torch.arange(T, device= device))
     x = token_emb + pos_embd 
+    x = self.self_att_head(x)
     logits = self.lm_head(x)
 
     if targets is None:
@@ -121,7 +157,9 @@ class BigramLanguageModel(nn.Module):
     return logits, loss
   def generate(self, idx, max_new_tokens):
     for _ in range(max_new_tokens):
-      logits, loss = self(idx)
+      # Crop because we only work with the last tokens from context_length:
+      idx_crop = idx[:, -CONTEXT_LENGTH:]
+      logits, loss = self(idx_crop)
       logits = logits[:, -1, :]
 
       proba = F.softmax(logits, dim=-1)
