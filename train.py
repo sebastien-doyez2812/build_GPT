@@ -128,6 +128,16 @@ class MultiHead(nn.Module):
     def forward(self, x):
       return torch.cat([h(x) for h in self.heads], dim= 1)
 
+class FeedForward(nn.Module):
+    def __init__(self, size):
+        super().__init__()
+        self.ff = nn.Sequential(
+          nn.Linear(size, size),
+          nn.ReLU() 
+        )
+    def forward(self, x):
+      return self.ff(x)
+    
 class BigramLanguageModel(nn.Module):
   def __init__(self):
     super().__init__()
@@ -137,12 +147,15 @@ class BigramLanguageModel(nn.Module):
     self.self_att_head = MultiHead(NB_CHANNELS, N_EMBD)
     self.lm_head = nn.linear(N_EMBD, vocab_size)
 
+    self.ff = FeedForward(N_EMBD)
+
   def forward(self, idx, targets=None):
     B, T, C = idx.shape()
     token_emb = self.token_embedding_table(idx) # shape is B, T, C, where C is the embedding
     pos_embd = self.pos_embedding_table(torch.arange(T, device= device))
     x = token_emb + pos_embd 
     x = self.self_att_head(x)
+    x = self.ff(x)
     logits = self.lm_head(x)
 
     if targets is None:
