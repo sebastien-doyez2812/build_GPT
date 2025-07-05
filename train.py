@@ -1,4 +1,6 @@
 import torch
+import torch.nn as nn
+from torch.nn import functional as F
 
 ###################################################
 #                (hyper) Parameters               #
@@ -10,7 +12,7 @@ CONTEXT_LENGTH = 8
 BATCHSIZE = 4
 LEARNINGRATE = 1e-4
 EPOCHS = 10000
-
+N_EMBD = 32
 ####################################################
 
 
@@ -90,4 +92,48 @@ xb, yb = get_batch("train")
 ###########################################
 #                Model                    #
 ###########################################
+
+
+class BigramLanguageModel(nn.Module):
+
+  def __init__(self):
+    super().__init__()
+    self.token_embedding_table = nn.Embedding(vocab_size, N_EMBD)
+    self.pos_embedding_table = nn.Embedding(CONTEXT_LENGTH, N_EMBD)
+    self.lm_head = nn.linear(N_EMBD, vocab_size)
+
+  def forward(self, idx, targets=None):
+    B, T, C = idx.shape()
+    token_emb = self.token_embedding_table(idx) # shape is B, T, C, where C is the embedding
+    pos_embd = self.pos_embedding_table(torch.arange(T, device= device))
+    x = token_emb + pos_embd 
+    logits = self.lm_head(x)
+
+    if targets is None:
+      loss = None
+    else:
+      B, T, C = logits.shape
+      # Doc Pytorch: cross_entropy needs data (minibatch,C)  = (B*T, C)
+      logits = logits.view(B*T, C)
+      targets = targets.view(B*T)
+
+      loss = F.cross_entropy(logits, targets)
+    return logits, loss
+  def generate(self, idx, max_new_tokens):
+    for _ in range(max_new_tokens):
+      logits, loss = self(idx)
+      logits = logits[:, -1, :]
+
+      proba = F.softmax(logits, dim=-1)
+      # Add creativity: choose with the probability with multinomial:
+      # If we have a tensor [0.9, 0.05, 0.7], we have great chance that multinomial choose 1 or 3, due to high probability
+      idx_next = torch.multinomial(proba, num_samples=1)
+      idx = torch.cat((idx, idx_next), dim=1)
+    return idx
+
+
+
+m = BigramLanguageModel(vocab_size)
+logits, loss = m(xb, yb)
+print(logits.shape)
 
