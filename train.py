@@ -51,6 +51,7 @@ def decode(l):
 #         Dataset preparation          #
 ########################################
 
+print("\033[33m[i] Dataset Preparation started:\033[0m")
 # Encoding our dataset:
 data = torch.tensor(encode(text), dtype=torch.long)
 
@@ -75,7 +76,7 @@ def get_batch(split):
     return x, y
 
 xb, yb = get_batch("train")
-
+print("\033[32m[i] Data ready.\033[0m")
 
 ###########################################
 #                Model                    #
@@ -99,7 +100,7 @@ class Head(nn.Module):
         q = self.query(x)
         v = self.value(x)
 
-        weights = q @ k.transpose(-2,1) * (k.shape[-1]**-0.5) # For nomalisation
+        weights = q @ k.transpose(-2,-1) * (k.shape[-1]**-0.5) # For nomalisation
         weights = weights.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         weights = F.softmax(weights, dim= -1)
         weights = self.dropout(weights)
@@ -117,7 +118,7 @@ class MultiHead(nn.Module):
         self.dropout = nn.Dropout(DROPOUT)
 
     def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim= 1)
+        out = torch.cat([h(x) for h in self.heads], dim= -1)
         out = self.dropout(self.proj(out))
         return out
 
@@ -165,7 +166,7 @@ class NanoGPT(nn.Module):
     self.lm_head = nn.Linear(N_EMBD, vocab_size)
 
   def forward(self, idx, targets=None):
-    B, T, C = idx.shape()
+    B, T= idx.shape
     token_emb = self.token_embedding_table(idx) # shape is B, T, C, where C is the embedding
     pos_embd = self.pos_embedding_table(torch.arange(T, device= device))
     x = token_emb + pos_embd 
