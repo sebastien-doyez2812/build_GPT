@@ -12,9 +12,11 @@ CONTEXT_LENGTH = 8
 BATCHSIZE = 4
 LEARNINGRATE = 1e-4
 EPOCHS = 10000
+VAL_INTERVAL = 1000
 N_EMBD = 32
 NB_LAYERS = 5
 NB_HEAD = 4
+DROPOUT = 0.3
 ####################################################
 
 
@@ -104,6 +106,7 @@ class Head(nn.Module):
         self.query = nn.Linear(N_EMBD, head_size, bias = False)
         self.value = nn.Linear(N_EMBD, head_size, bias = False)
         self.register_buffer('tril', torch.trill(torch.ones[CONTEXT_LENGTH, CONTEXT_LENGTH]))
+        self.dropout = nn.Dropout(DROPOUT)
 
     def forward(self, x):
       # This is self attention:
@@ -115,6 +118,7 @@ class Head(nn.Module):
       weights = q @ k.transpose(-2,1) * (C**-0.5) # For nomalisation
       weights = weights.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
       weights = F.softmax(weights)
+      weights = self.dropout(weights)
 
       out = weights @ v
       return out
@@ -138,7 +142,8 @@ class FeedForward(nn.Module):
         self.ff = nn.Sequential(
           nn.Linear(size, 4 * size),
           nn.ReLU(), 
-          nn.Linear(4 * size, size)
+          nn.Linear(4 * size, size),
+          nn.Dropout(DROPOUT)
         )
 
     def forward(self, x):
@@ -162,17 +167,13 @@ class Blocks(nn.Module):
         return x
     
 
-class BigramLanguageModel(nn.Module):
+class NanoGPT(nn.Module):
   def __init__(self):
     super().__init__()
     self.token_embedding_table = nn.Embedding(vocab_size, N_EMBD)
     self.pos_embedding_table = nn.Embedding(CONTEXT_LENGTH, N_EMBD)
     
-    self.blocks = nn.Sequential(
-       Blocks(n_embed= N_EMBD, n_head= NB_HEAD),
-       Blocks(n_embed= N_EMBD, n_head= NB_HEAD),
-       Blocks(n_embed= N_EMBD, n_head= NB_HEAD)
-                               )
+    self.blocks = nn.Sequential([Blocks(n_embed= N_EMBD, n_head= NB_HEAD)] for _ in range (NB_LAYERS))
     self.layer_norm = nn.LayerNorm(N_EMBD)
     
     self.lm_head = nn.Linear(N_EMBD, vocab_size)
@@ -197,6 +198,7 @@ class BigramLanguageModel(nn.Module):
 
       loss = F.cross_entropy(logits, targets)
     return logits, loss
+  
   def generate(self, idx, max_new_tokens):
     for _ in range(max_new_tokens):
       # Crop because we only work with the last tokens from context_length:
@@ -212,8 +214,31 @@ class BigramLanguageModel(nn.Module):
     return idx
 
 
+###############################################
+##                  TRAINING                 ##
+###############################################
 
-m = BigramLanguageModel(vocab_size)
-logits, loss = m(xb, yb)
-print(logits.shape)
+model = NanoGPT()
+m = model.to(device) # load the model in GPU if possible
 
+optimizer = torch.optim.AdamW(model.parameters()/1e-6, lr = LEARNINGRATE)
+
+for iter in range(EPOCHS):
+    if iter % VAL_INTERVAL or iter = EPOCHS - 1:
+        loss = estimate_loss()
+        print(f"Epoch {iter}/{EPOCHS}:\n train loss: {loss["train"]:.4f}, val loss: {loss["val"]:.4f}")
+    xb, yb = get_batch("train")
+
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad(set_to_none= True)
+
+    loss.backward()
+    optimizer.step()
+
+
+###################################################
+##                   TEST                        ##
+###################################################
+
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print(decode(m.generate(context, max_new_tokens=500)[0].tolist()))
