@@ -13,7 +13,8 @@ BATCHSIZE = 4
 LEARNINGRATE = 1e-4
 EPOCHS = 10000
 N_EMBD = 32
-NB_CHANNELS = 4
+NB_LAYERS = 5
+NB_HEAD = 4
 ####################################################
 
 
@@ -124,38 +125,66 @@ class MultiHead(nn.Module):
     super().__init__()  
     # Just create multiples heads:
     self.heads = nn.ModuleList(Head(head_size) for _ in range(nb_head))
-
+    self.proj = nn.Linear(N_EMBD, N_EMBD)
+    
     def forward(self, x):
-      return torch.cat([h(x) for h in self.heads], dim= 1)
-
+        out = torch.cat([h(x) for h in self.heads], dim= 1)
+        out = self.proj(out)
+        return out
+    
 class FeedForward(nn.Module):
     def __init__(self, size):
         super().__init__()
         self.ff = nn.Sequential(
-          nn.Linear(size, size),
-          nn.ReLU() 
+          nn.Linear(size, 4 * size),
+          nn.ReLU(), 
+          nn.Linear(4 * size, size)
         )
+
     def forward(self, x):
       return self.ff(x)
     
+class Blocks(nn.Module):
+    def __init__(self, n_embed, n_head):
+        super().__init__()
+        head_size = n_embed // n_head
+        self.multihead_att = MultiHead(n_head, head_size)
+        self.ff = FeedForward(n_embed)
+        self.layerNorm1 = nn.LayerNorm(N_EMBD)
+        self.layerNorm2 = nn.LayerNorm(N_EMBD)
+
+    
+    def forward(self, x):
+        # Change from Attention is all you need:
+        # LayerNorm are befoore multihead and feed forward!
+        x = x + self.multihead_att(self.layerNorm1(x))
+        x = x + self.ff(self.layerNorm2(x))
+        return x
+    
+
 class BigramLanguageModel(nn.Module):
   def __init__(self):
     super().__init__()
     self.token_embedding_table = nn.Embedding(vocab_size, N_EMBD)
     self.pos_embedding_table = nn.Embedding(CONTEXT_LENGTH, N_EMBD)
     
-    self.self_att_head = MultiHead(NB_CHANNELS, N_EMBD)
-    self.lm_head = nn.linear(N_EMBD, vocab_size)
-
-    self.ff = FeedForward(N_EMBD)
+    self.blocks = nn.Sequential(
+       Blocks(n_embed= N_EMBD, n_head= NB_HEAD),
+       Blocks(n_embed= N_EMBD, n_head= NB_HEAD),
+       Blocks(n_embed= N_EMBD, n_head= NB_HEAD)
+                               )
+    self.layer_norm = nn.LayerNorm(N_EMBD)
+    
+    self.lm_head = nn.Linear(N_EMBD, vocab_size)
 
   def forward(self, idx, targets=None):
     B, T, C = idx.shape()
     token_emb = self.token_embedding_table(idx) # shape is B, T, C, where C is the embedding
     pos_embd = self.pos_embedding_table(torch.arange(T, device= device))
     x = token_emb + pos_embd 
-    x = self.self_att_head(x)
-    x = self.ff(x)
+    x = self.blocks(x)
+    x = self.layer_norm(x)
+
     logits = self.lm_head(x)
 
     if targets is None:
