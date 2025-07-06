@@ -1,14 +1,15 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import numpy as np
 
 ###################################################
 #                (hyper) Parameters               #
 ###################################################
 torch.manual_seed(1337)
-DATASET_PATH = "/content/drive/MyDrive/Colab Notebooks/build_a_GPT/wikisent2.txt"
+DATASET_PATH = "C:/Users/doyez/Downloads/wikisent2.txt"
 PERCENTAGE_TRAINING = 0.9
-CONTEXT_LENGTH = 8
+CONTEXT_LENGTH = 256
 BATCHSIZE = 4
 LEARNINGRATE = 1e-4
 EPOCHS = 10000
@@ -22,20 +23,15 @@ DROPOUT = 0.3
 
 # Set the GPU if available:
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(device)
+print(f"[i] device used: {device}")
 
 # Read the dataset:
 with open(DATASET_PATH, "r") as f:
   text = f.read()
 
-# Test:
-print(text[:500])
-
 # Get all the caracters available:
 chars = sorted(list(set(text)))
 vocab_size = len(chars)
-print(chars)
-print(vocab_size)
 
 # 2 dictionnaries:
 #stoi maps caracters to integers: "c" : 1 for example
@@ -51,17 +47,12 @@ def encode(s):
 def decode(l):
   return "".join([itos[i] for i in l])
 
-# Test:
-print(encode("Hey, i'm Seb"))
-print(decode(encode("Hey, i'm Seb")))
-
 ########################################
 #         Dataset preparation          #
 ########################################
 
 # Encoding our dataset:
 data = torch.tensor(encode(text), dtype=torch.long)
-print(data.shape, data.dtype)
 
 #Split the dataset:
 n = int(PERCENTAGE_TRAINING * len(data))
@@ -73,22 +64,15 @@ x = train_data[:CONTEXT_LENGTH]
 #Expected output:
 y = train_data[1:CONTEXT_LENGTH+1]
 
-#  Test:
-for t in range(CONTEXT_LENGTH):
-  context = x[:t+1]
-  target = y[t]
-  print(f"when input is {context} the target: {target}")
-
 # Create the batchs:
-
 def get_batch(split):
-  data = train_data if split == "train" else val_data
-  # Starting position:
-  ix = torch.randint(len(data) - CONTEXT_LENGTH, (BATCHSIZE,))
+    data = train_data if split == "train" else val_data
+    # Starting position:
+    ix = torch.randint(len(data) - CONTEXT_LENGTH, (BATCHSIZE,))
 
-  x = torch.stack([data[i:i+CONTEXT_LENGTH] for i in ix])
-  y = torch.stack([data[i+1:i+CONTEXT_LENGTH+1] for i in ix])
-  return x, y
+    x = torch.stack([data[i:i+CONTEXT_LENGTH] for i in ix])
+    y = torch.stack([data[i+1:i+CONTEXT_LENGTH+1] for i in ix])
+    return x, y
 
 xb, yb = get_batch("train")
 
@@ -102,40 +86,41 @@ class Head(nn.Module):
     def __init__(self, head_size):
 
         super().__init__()
-        self.key = key = nn.Linear(N_EMBD, head_size, bias = False)
+        self.key = nn.Linear(N_EMBD, head_size, bias = False)
         self.query = nn.Linear(N_EMBD, head_size, bias = False)
         self.value = nn.Linear(N_EMBD, head_size, bias = False)
-        self.register_buffer('tril', torch.trill(torch.ones[CONTEXT_LENGTH, CONTEXT_LENGTH]))
+        self.register_buffer('tril', torch.tril(torch.ones(CONTEXT_LENGTH, CONTEXT_LENGTH)))
         self.dropout = nn.Dropout(DROPOUT)
 
     def forward(self, x):
-      # This is self attention:
-      B, T, C = x.shape
-      k = self.key(x)
-      q = self.query(x)
-      v = self.value(x)
+        # This is self attention:
+        B, T, C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        v = self.value(x)
 
-      weights = q @ k.transpose(-2,1) * (C**-0.5) # For nomalisation
-      weights = weights.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-      weights = F.softmax(weights)
-      weights = self.dropout(weights)
+        weights = q @ k.transpose(-2,1) * (k.shape[-1]**-0.5) # For nomalisation
+        weights = weights.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        weights = F.softmax(weights, dim= -1)
+        weights = self.dropout(weights)
 
-      out = weights @ v
-      return out
+        out = weights @ v
+        return out
 
 # To have a better LLM, use multiples heads:
 class MultiHead(nn.Module):
-  def __init__(self, nb_head, head_size):
-    super().__init__()  
-    # Just create multiples heads:
-    self.heads = nn.ModuleList(Head(head_size) for _ in range(nb_head))
-    self.proj = nn.Linear(N_EMBD, N_EMBD)
-    
+    def __init__(self, nb_head, head_size):
+        super().__init__()  
+        # Just create multiples heads:
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(nb_head)])
+        self.proj = nn.Linear(head_size * nb_head, N_EMBD)
+        self.dropout = nn.Dropout(DROPOUT)
+
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim= 1)
-        out = self.proj(out)
+        out = self.dropout(self.proj(out))
         return out
-    
+
 class FeedForward(nn.Module):
     def __init__(self, size):
         super().__init__()
@@ -155,13 +140,14 @@ class Blocks(nn.Module):
         head_size = n_embed // n_head
         self.multihead_att = MultiHead(n_head, head_size)
         self.ff = FeedForward(n_embed)
-        self.layerNorm1 = nn.LayerNorm(N_EMBD)
-        self.layerNorm2 = nn.LayerNorm(N_EMBD)
+        self.layerNorm1 = nn.LayerNorm(n_embed)
+        self.layerNorm2 = nn.LayerNorm(n_embed)
 
     
     def forward(self, x):
         # Change from Attention is all you need:
         # LayerNorm are befoore multihead and feed forward!
+        # x + ... for skip connection
         x = x + self.multihead_att(self.layerNorm1(x))
         x = x + self.ff(self.layerNorm2(x))
         return x
@@ -173,7 +159,7 @@ class NanoGPT(nn.Module):
     self.token_embedding_table = nn.Embedding(vocab_size, N_EMBD)
     self.pos_embedding_table = nn.Embedding(CONTEXT_LENGTH, N_EMBD)
     
-    self.blocks = nn.Sequential([Blocks(n_embed= N_EMBD, n_head= NB_HEAD)] for _ in range (NB_LAYERS))
+    self.blocks = nn.Sequential(*[Blocks(n_embed= N_EMBD, n_head= NB_HEAD) for _ in range (NB_LAYERS)])
     self.layer_norm = nn.LayerNorm(N_EMBD)
     
     self.lm_head = nn.Linear(N_EMBD, vocab_size)
@@ -213,7 +199,21 @@ class NanoGPT(nn.Module):
       idx = torch.cat((idx, idx_next), dim=1)
     return idx
 
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    # Put in eval, to desactivate the drop out, batchnorm...
+    model.eval()
 
+    for split in ['train', 'val']:
+        losses = torch.zeros(VAL_INTERVAL)
+        for k in range(VAL_INTERVAL):
+            X, Y = get_batch(split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
 ###############################################
 ##                  TRAINING                 ##
 ###############################################
@@ -221,10 +221,10 @@ class NanoGPT(nn.Module):
 model = NanoGPT()
 m = model.to(device) # load the model in GPU if possible
 
-optimizer = torch.optim.AdamW(model.parameters()/1e-6, lr = LEARNINGRATE)
-
+optimizer = torch.optim.AdamW(model.parameters(), lr = LEARNINGRATE)
+print("\033[<33>m<[i] Training started:>\033[0m")
 for iter in range(EPOCHS):
-    if iter % VAL_INTERVAL or iter = EPOCHS - 1:
+    if iter % VAL_INTERVAL or iter == EPOCHS - 1:
         loss = estimate_loss()
         print(f"Epoch {iter}/{EPOCHS}:\n train loss: {loss["train"]:.4f}, val loss: {loss["val"]:.4f}")
     xb, yb = get_batch("train")
